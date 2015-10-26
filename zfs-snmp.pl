@@ -52,8 +52,10 @@ my $CACHE_TIME = 30;
 my $NAME = 'ZFSSTATS';
 
 # proc FS base for ZFS
-my $PROCZFS
- = '/proc/spl/kstat/zfs';
+my $PROCZFS = '/proc/spl/kstat/zfs';
+
+# ZFS command
+my $ZFSCMD = '/usr/bin/sudo /sbin/zfs';
 
 #use strict breaks embedded perl support, so leave out
 #use strict; my $agent;
@@ -68,6 +70,7 @@ my $REGAT = new NetSNMP::OID($SOURCEOID);
 
 my $COMMON = $REGAT . '.0';
 my $POOL   = $REGAT . '.1';
+my $DATASET = $REGAT . '.2';
 
 my $O_ARCSTATS  = $COMMON . '.0';
 my $O_ZIL       = $COMMON . '.1';
@@ -82,7 +85,13 @@ my $O_POOL_IDX  = $POOL . '.0';
 my $O_POOL_NAME = $POOL . '.1';
 my $O_POOL_IO   = $POOL . '.2';
 
-
+my $O_DSET_IDX = $DATASET . '.0';
+my $O_DSET_NAME = $DATASET . '.1';
+my $O_DSET_AVAIL = $DATASET . '.2';
+my $O_DSET_USED = $DATASET . '.3';
+my $O_DSET_USEDSNAP = $DATASET . '.4';
+my $O_DSET_USEDDS = $DATASET . '.5';
+my $O_DSET_USEDREFRESERV = $DATASET . '.6';
 
 #cache statistics in these hashes. Cache age stored in scalars
 #cache expired after $CACHE_TIME
@@ -90,10 +99,13 @@ my $common_cache_time = 0;
 my $common_cache={};
 my $pool_cache_time = 0;
 my $pool_cache= {};
+my $dset_cache_time = 0;
+my $dest_cache={};
 
 # fill caches
 update_common_cache();
 update_pool_cache();
+update_dset_cache();
 
 # register OIDs
 my $oidmap=build_oidmap();
@@ -303,12 +315,19 @@ sub update_pool_cache {
       'io' => read_pool_io($pool)
     };
   }
+  $pool_cache_time=time;
+}
+
+sub update_dset_cache {
+  $dset_cache = read_dsets();
+  $dset_cache_time=time;
 }
 
 sub build_oidmap {
   my %omap=(
     %{register_arcstats_opts()},
-    %{register_pool_opts()}
+    %{register_pool_opts()},
+    %{register_dset_opts()}
   );
   return \%omap;
 }
@@ -339,6 +358,22 @@ sub register_pool_opts {
   return $href;
 }
 
+sub register_dset_opts {
+  my $d_idx=0;
+  my $href={};
+  foreach my $dset (keys %$dset_cache) {
+    $href->{$O_DSET_IDX.'.'.$d_idx}=$d_idx;
+    $href->{$O_DSET_NAME.'.'.$d_idx}='$dset_cache->{'.$dset.'}->{name}';
+    $href->{$O_DSET_AVAIL.'.'.$d_idx}='$dset_cache->{'.$dset.'}->{avail}';
+    $href->{$O_DSET_USED.'.'.$d_idx}='$dset_cache->{'.$dset.'}->{used}';
+    $href->{$O_DSET_USEDSNAP.'.'.$d_idx}='$dset_cache->{'.$dset.'}->{usedsnap}';
+    $href->{$O_DSET_USEDDS.'.'.$d_idx}='$dset_cache->{'.$dset.'}->{usedds}';
+    $href->{$O_DSET_USEDREFRESERV.'.'.$d_idx}='$dset_cache->{'.$dset.'}->{usedrefreserv}';
+
+    $d_idx++;
+  }
+  return $href;
+}
 
 sub read_stats {
   my $statfile=shift;
@@ -384,4 +419,25 @@ sub read_pool_io {
     $stats->{$headers[$i]}=$values[$i];
   }
   return $stats;
+}
+
+sub read_dsets {
+  my $stats={};
+
+  my $cmd=$ZFSCMD."list -pH -o space";
+  open( DSETS, $cmd:"|" ) || die "error when invoking $cmd: $!";
+  while (<DSETS>) {
+    chomp;
+    my @parts = split "/w+", $_;
+    $stats->{$parts[0]} = {
+      'avail' => $parts[1],
+      'used' => $parts[2],
+      'usedsnap' => $parts[3],
+      'usedds' => $parts[4],
+      'usedrefreserv' => $parts[5]
+    }
+  }
+  closedir $dh;
+
+  return @stats;
 }
